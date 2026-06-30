@@ -43,10 +43,8 @@ Thumbs.db
 
 # phpstorm
 .idea/*
-!.idea/runConfigurations/*
-!.idea/codeStyles/*
-!.idea/scopes/*
-!.idea/watcherTasks.xml
+!.idea/runConfigurations/
+!.idea/scopes/
 
 # testing stuff
 tests/_output/*
