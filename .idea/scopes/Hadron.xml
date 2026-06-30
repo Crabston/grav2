@@ -1,0 +1,3 @@
+<component name="DependencyValidationManager">
+  <scope name="Hadron" pattern="file[grav]:user//*&amp;&amp;!file[grav]:user/pages//*&amp;&amp;!file[grav]:user/plugins//*&amp;&amp;!file[grav]:user/themes/custom//*&amp;&amp;!file[grav]:user/themes/quark2//*" />
+</component>
