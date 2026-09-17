@@ -221,6 +221,21 @@ class UtilsTest extends \PHPUnit\Framework\TestCase
         self::assertEquals('text/html', Utils::getMimeByExtension('foo', 'text/html'));
     }
 
+    public function testGetMimeByExtensionHonoursMediaTypesOverride(): void
+    {
+        $config = $this->grav['config'];
+        $original = $config->get('media.types.rss');
+
+        // A site can change the type served for an output format in its own media.yaml,
+        // for example application/xml so an RSS feed can be styled with XSLT (#3735).
+        $config->set('media.types.rss.mime', 'application/xml');
+        self::assertEquals('application/xml', Utils::getMimeByExtension('rss'));
+        self::assertEquals('application/xml', Utils::getMimeByExtension('RSS'));
+
+        $config->set('media.types.rss', $original);
+        self::assertEquals('application/rss+xml', Utils::getMimeByExtension('rss'));
+    }
+
     public function testGetExtensionByMime(): void
     {
         self::assertEquals('html', Utils::getExtensionByMime('*/*'));
@@ -316,6 +331,32 @@ class UtilsTest extends \PHPUnit\Framework\TestCase
         $timestamp = strtotime('10 September 2000');
         self::assertSame($timestamp, Utils::date2timestamp('10 September 2000'));
         self::assertSame($timestamp, Utils::date2timestamp('2000-09-10 00:00:00'));
+    }
+
+    public function testDate2timestampWithNonStringDate(): void
+    {
+        // An unquoted YAML date header such as `date: 2000-09-10` never reaches
+        // us as a string: the YAML parser reads it as a date and hands over a
+        // Unix timestamp, which strtotime() then misreads as a year in the far
+        // future. Accept these directly instead. Fixes #3812.
+        $timestamp = (new DateTime('2000-09-10 00:00:00'))->getTimestamp();
+
+        self::assertSame($timestamp, Utils::date2timestamp($timestamp));
+        self::assertSame($timestamp, Utils::date2timestamp((float) $timestamp));
+        self::assertSame($timestamp, Utils::date2timestamp(new DateTime('2000-09-10 00:00:00')));
+        self::assertSame($timestamp, Utils::date2timestamp(new DateTimeImmutable('2000-09-10 00:00:00')));
+    }
+
+    public function testDate2timestampKeepsReadingBareNumericDates(): void
+    {
+        // `date: 20000910` is also an int by the time it arrives, but it is the
+        // number the author typed rather than a timestamp, and it has always
+        // been read correctly as a date. Treating every int as a timestamp
+        // would silently move these pages to 1970.
+        $timestamp = (new DateTime('2000-09-10 00:00:00'))->getTimestamp();
+
+        self::assertSame($timestamp, Utils::date2timestamp(20000910));
+        self::assertSame($timestamp, Utils::date2timestamp('20000910'));
     }
 
     public function testResolve(): void
