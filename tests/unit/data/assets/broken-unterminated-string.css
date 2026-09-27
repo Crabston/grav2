@@ -1,0 +1,4 @@
+.example {
+    content: "unterminated;
+    width: calc(100% - 20px);
+}

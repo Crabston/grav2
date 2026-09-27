@@ -10,6 +10,7 @@
 namespace Grav\Common\Media\Traits;
 
 use Grav\Common\Grav;
+use Grav\Common\Media\Interfaces\ImageManipulateInterface;
 use Grav\Common\Media\Interfaces\ImageMediaInterface;
 use Grav\Common\Media\Interfaces\MediaCollectionInterface;
 use Grav\Common\Page\Medium\ImageFile;
@@ -54,11 +55,17 @@ trait ImageMediaTrait
     /** @var bool */
     protected $watermark;
 
+    /** @var array|null The watermark() arguments queued on this image, if any */
+    protected $watermarked;
+
     /** @var bool */
     protected $progressive;
 
     /** @var bool Whether anything is queued that changes the image's pixels, format or quality */
     protected $transformed = false;
+
+    /** @var array<string, array{0:int,1:int}> Source dimensions by path, cached for the request */
+    protected static $sourceSizeCache = [];
 
     /** @var array */
     public static $magic_actions = [
@@ -154,7 +161,10 @@ trait ImageMediaTrait
         } else {
             $max_width = min($max_width, $base->get('width'));
 
-            for ($width = $min_width; $width < $max_width; $width += $step) {
+            for ($width = $min_width; $width <= $max_width; $width += $step) {
+                if ($width >= $base->get('width')) {
+                    continue;
+                }
                 $widths[] = $width;
             }
         }
@@ -191,11 +201,53 @@ trait ImageMediaTrait
                 $derivative->set('width', $width);
                 $derivative->set('height', $height);
 
+                // A derivative is this image at another width, so it takes the
+                // format and quality already set here. Without this the result
+                // depended on the order the actions arrived in: format() only
+                // reaches the alternatives that exist when it is called.
+                // getgrav/grav#4317.
+                if ($derivative instanceof ImageManipulateInterface) {
+                    if ($this->format !== 'guess') {
+                        $derivative->format($this->format);
+                    }
+                    $derivative->quality($this->quality);
+                }
+
+                // Same for a watermark asked for before the derivatives were.
+                if ($this->watermarked && method_exists($derivative, 'queueWatermark')) {
+                    $derivative->queueWatermark($this->watermarked);
+                }
+
                 $this->addAlternative($ratio, $derivative);
             }
         }
 
         return $this;
+    }
+
+    /**
+     * Queues a watermark on this image and on each alternative. The stamp is
+     * sized and placed when the image is processed, so every image is stamped
+     * at its own final size.
+     *
+     * @param array $args [stamp image, position, scale from 0 to 1]
+     * @return void
+     */
+    protected function queueWatermark(array $args)
+    {
+        if (!$this->image) {
+            $this->image();
+        }
+
+        $this->transformed = true;
+        $this->watermarked = $args;
+        $this->image->watermark(...$args);
+
+        foreach ($this->alternatives as $medium) {
+            if (method_exists($medium, 'queueWatermark')) {
+                $medium->queueWatermark($args);
+            }
+        }
     }
 
     /**
@@ -207,7 +259,8 @@ trait ImageMediaTrait
     }
 
     /**
-     * Sets or gets the quality of the image
+     * Sets or gets the quality of the image. Setting it reaches every
+     * alternative too, so a srcset is encoded at one quality throughout.
      *
      * @param  int|null $quality 0-100 quality
      * @return int|$this
@@ -222,6 +275,15 @@ trait ImageMediaTrait
             $this->transformed = true;
             $this->quality = $quality;
 
+            // The magic actions fan out to the alternatives from __call(), which
+            // a declared method never passes through, so it is done here.
+            // getgrav/grav#4317.
+            foreach ($this->alternatives as $medium) {
+                if ($medium instanceof ImageManipulateInterface) {
+                    $medium->quality($quality);
+                }
+            }
+
             return $this;
         }
 
@@ -229,7 +291,8 @@ trait ImageMediaTrait
     }
 
     /**
-     * Sets image output format.
+     * Sets image output format, for the image and every alternative, so a
+     * srcset is served in one format throughout.
      *
      * @param string $format
      * @return $this
@@ -242,6 +305,14 @@ trait ImageMediaTrait
 
         $this->transformed = true;
         $this->format = $format;
+
+        // As in quality(): __call() does the fan-out for the magic actions and
+        // never sees a declared method. getgrav/grav#4317.
+        foreach ($this->alternatives as $medium) {
+            if ($medium instanceof ImageManipulateInterface) {
+                $medium->format($format);
+            }
+        }
 
         return $this;
     }
@@ -411,6 +482,33 @@ trait ImageMediaTrait
             return parent::path(false);
         }
 
+        // Refuse oversized source rasters before getgrav/image initializes its
+        // adapter. GD and Imagick decode the full source before applying a resize,
+        // so limiting only the requested output dimensions does not bound memory.
+        //
+        // This has to read the file rather than trust the `width`/`height` meta:
+        // derivatives() overwrites those with the requested output size while
+        // `filepath` still points at the full-size source. One srcset can put many
+        // derivatives of the same source through here, so the reads are cached for
+        // the request.
+        $maxPixels = (int) Grav::instance()['config']->get('system.images.max_pixels', 25000000);
+        $sourcePath = (string) $this->get('filepath');
+        if (!array_key_exists($sourcePath, static::$sourceSizeCache)) {
+            $sourceSize = @getimagesize($sourcePath);
+            static::$sourceSizeCache[$sourcePath] = [
+                (int) ($sourceSize[0] ?? 0),
+                (int) ($sourceSize[1] ?? 0),
+            ];
+        }
+        [$width, $height] = static::$sourceSizeCache[$sourcePath];
+        if ($maxPixels > 0 && $width > 0 && $height > intdiv($maxPixels, $width)) {
+            Grav::instance()['log']->warning(sprintf(
+                'Refusing to process image source above system.images.max_pixels: %s (%dx%d)',
+                $sourcePath, $width, $height
+            ));
+            return parent::path(false);
+        }
+
         $this->filter();
 
         if (isset($this->result)) {
@@ -435,7 +533,8 @@ trait ImageMediaTrait
             $this->image->merge(ImageFile::open($overlay));
         }
 
-        if ($this->watermark) {
+        // `watermark_all`, unless this image already has a watermark of its own.
+        if ($this->watermark && !$this->watermarked) {
             $this->watermark();
         }
 
