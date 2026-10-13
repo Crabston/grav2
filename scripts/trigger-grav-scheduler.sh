@@ -7,8 +7,7 @@
 cd "$(dirname "$0")/.."
 
 # Run the Grav scheduler
-#/bin/php bin/grav scheduler 1>> /dev/null 2>&1
-/bin/php bin/grav scheduler
+php bin/grav scheduler
 
 # Output the last run time for cron with TZ
 echo "last run @ $(date +'%d-%m-%Y %H:%M:%S %:z')"
